@@ -1,0 +1,304 @@
+BioSTEAM AI Assistant: Project Plan
+
+Goal
+
+Build an open-source AI assistant that lets researchers interact with BioSTEAM through natural language, starting with trusted pre-built models and gradually expanding toward guided scenario configuration.
+
+The core idea is not to let an AI freely invent process simulations. The stronger, more publishable version is a validated assistant that translates user intent into controlled BioSTEAM operations, runs simulations reproducibly, and explains TEA/LCA results in plain English.
+
+BioSTEAM is already a strong foundation because it is an open-source Python platform for biorefinery simulation, techno-economic analysis, life-cycle assessment, and uncertainty analysis, with an existing ecosystem of models through Bioindustrial-Park and related work documented in the BioSTEAM documentation and the original ACS Sustainable Chemistry & Engineering paper.
+
+
+Project Thesis
+
+BioSTEAM is powerful but inaccessible to many domain experts because using it typically requires Python programming, process simulation knowledge, and familiarity with TEA/LCA workflows.
+
+This project proposes an AI layer on top of BioSTEAM that allows users to ask questions such as:
+
+"What happens to the minimum ethanol selling price if fermentation efficiency drops to 80%?"
+
+The assistant should:
+
+1. Identify the relevant BioSTEAM model.
+2. Map the user's question to allowed model parameters.
+3. Run the simulation through a controlled tool interface.
+4. Return numerical results, plain-language interpretation, assumptions, and reproducible run details.
+
+The research contribution is a reliable natural-language interface for scientific process simulation, with validation against known BioSTEAM outputs and user testing with non-programmers.
+
+
+Why This Is Worth Doing
+
+The current proposal is strongest when framed around three claims:
+
+1. Access: BioSTEAM can support important biorefinery decisions, but many potential users cannot work directly in Python.
+2. Reliability: General AI chatbots can hallucinate scientific results, so this project must use grounded retrieval, tool calling, validation, and reproducible execution.
+3. Research value: The project studies whether LLMs can safely mediate between natural-language domain questions and rigorous simulation software.
+
+This makes the project more credible than a generic "chatbot for BioSTEAM."
+
+
+Research Questions
+
+The project should be organized around these questions:
+
+1. Intent translation: Can an LLM reliably translate natural-language TEA/LCA questions into structured BioSTEAM model operations?
+2. Grounding: Does retrieval over BioSTEAM documentation, model metadata, and parameter descriptions improve answer correctness?
+3. Simulation reliability: Can the assistant produce numerically correct outputs compared with reference BioSTEAM scripts?
+4. Usability: Can non-programming users complete common TEA/LCA tasks faster and with fewer errors using the assistant?
+5. Reproducibility: Can every AI-assisted result be traced back to model version, parameter values, simulation code path, and output data?
+
+
+Proposed System
+
+The system should have five layers:
+
+User -> Chat Interface -> LLM Orchestrator -> BioSTEAM Knowledge Base
+                                      -> Typed Tool Registry -> BioSTEAM Models -> TEA/LCA Results -> Plain Language Explanation -> User
+
+1. Chat Interface
+
+A simple web UI where users ask questions, inspect assumptions, view results, and download outputs.
+
+Initial implementation can use Streamlit for speed. A later version can use React if the project needs a more polished application.
+
+2. LLM Orchestrator
+
+The AI does not directly invent arbitrary Python scripts at first. Instead, it chooses from approved tools such as:
+
+- Load model
+- View model assumptions
+- Change parameter
+- Run simulation
+- Calculate MSP, NPV, GWP, or other metrics
+- Run sensitivity analysis
+- Generate explanation
+- Export report
+
+This is safer and easier to validate.
+
+3. RAG Knowledge Base
+
+The assistant should retrieve from:
+
+- BioSTEAM documentation
+- Bioindustrial-Park model documentation
+- Model-specific parameter descriptions
+- TEA/LCA glossary
+- Example notebooks and validated reference workflows
+
+The RAG layer should be used for explanation and parameter understanding, not as a substitute for actual simulation.
+
+4. BioSTEAM Execution Layer
+
+A Python backend runs BioSTEAM models in a controlled environment.
+
+Each run should record:
+
+- Model name
+- BioSTEAM version
+- Input parameters
+- Changed assumptions
+- Simulation outputs
+- Errors or convergence warnings
+- Timestamp and run ID
+
+5. Results and Provenance Layer
+
+The assistant should return:
+
+- Main answer in plain English
+- Key metrics
+- Parameter changes
+- Comparison to baseline
+- Units
+- Assumptions
+- Reproducibility log
+- Optional chart or flowsheet
+
+
+Recommended Scope
+
+The original plan is ambitious. I would narrow the first version so it becomes demonstrable and publishable sooner.
+
+The best MVP is:
+
+"A natural-language assistant for querying and modifying a small set of validated BioSTEAM models, with numerical regression tests and plain-language explanations."
+
+Start with 1-3 established models, such as:
+
+- Corn stover ethanol
+- Sugarcane or lipidcane biorefinery
+- Waste plastics pyrolysis, if aligned with the lab's interests
+
+Avoid promising unrestricted "build any model from scratch" in the first milestone. That can become a later research direction.
+
+
+12-Month Roadmap
+
+Phase 1: Validated Query Assistant
+Months 1-4
+
+Build a working assistant over pre-built BioSTEAM models.
+
+Deliverables:
+
+- Select 1-3 target BioSTEAM/Bioindustrial-Park models.
+- Define a typed parameter schema for each model.
+- Build a tool-calling interface for safe model operations.
+- Implement natural-language questions over baseline and modified scenarios.
+- Return plain-language summaries with units, assumptions, and run logs.
+- Create benchmark prompts with expected outputs.
+- Validate assistant outputs against reference Python scripts.
+
+Example prompts:
+
+- "What is the minimum selling price of ethanol in the baseline model?"
+- "What happens if fermentation efficiency drops to 80%?"
+- "Which parameter has the largest effect on production cost?"
+- "Summarize the main environmental impact drivers."
+
+Success criteria:
+
+- 90%+ correct tool selection on benchmark prompts.
+- Numerical outputs match reference BioSTEAM scripts within defined tolerance.
+- Assistant refuses unsupported or ambiguous requests instead of hallucinating.
+
+This phase alone can become a workshop paper, demo paper, or short communication.
+
+
+Phase 2: Guided Scenario Configuration
+Months 5-8
+
+Extend the assistant from simple querying to guided scenario setup.
+
+Instead of letting users freely request any process, the assistant should guide them through a structured workflow.
+
+Deliverables:
+
+- Add multi-turn parameter collection.
+- Support scenario comparison against baseline.
+- Add sensitivity analysis and uncertainty workflows.
+- Add safeguards for invalid parameter ranges.
+- Improve RAG over model assumptions and documentation.
+- Add clearer visual outputs: charts, tables, and flowsheet links.
+- Expand benchmark set with ambiguous and adversarial prompts.
+
+Example prompts:
+
+- "Compare ethanol price at three different enzyme loadings."
+- "Run a sensitivity analysis for feedstock cost and conversion yield."
+- "Set up a New Jersey corn stover scenario using a 20-year plant lifetime."
+- "Explain which assumptions changed from baseline."
+
+Success criteria:
+
+- Users can configure common scenarios without writing Python.
+- Invalid inputs are caught before execution.
+- All scenario changes are documented in the final answer.
+- Sensitivity outputs match scripted BioSTEAM workflows.
+
+
+Phase 3: Web App, Evaluation, and Publication
+Months 9-12
+
+Turn the prototype into a shareable research artifact and evaluate it with users.
+
+Deliverables:
+
+- Deploy a web application.
+- Add authentication or rate limits if needed.
+- Add downloadable reports.
+- Add export of simulation data as CSV/Excel.
+- Run a user study with students or domain collaborators.
+- Compare assistant use against standard BioSTEAM notebooks or documentation.
+- Prepare open-source documentation.
+- Submit a paper or demo manuscript.
+
+User study tasks:
+
+- Find baseline MSP.
+- Modify one process parameter.
+- Compare two scenarios.
+- Interpret an LCA or cost result.
+- Identify assumptions behind a result.
+
+Evaluation metrics:
+
+- Task completion rate
+- Time to completion
+- Number of user errors
+- Numerical correctness
+- User confidence
+- Perceived usability
+- Explanation quality
+
+
+Technical Stack
+
+Suggested stack:
+
+- Backend: Python, FastAPI or Streamlit initially
+- Simulation: BioSTEAM and Bioindustrial-Park models
+- LLM layer: Claude API or comparable tool-calling LLM
+- Tool orchestration: Direct typed tool calling first; LangChain only if it reduces complexity
+- Retrieval: Local vector database over docs, examples, and model metadata
+- Frontend: Streamlit for MVP; React for polished deployment
+- Testing: Pytest regression tests against reference outputs
+- Deployment: Docker container, university server, or cloud VM
+
+The most important technical decision is to prioritize typed tools and validation over free-form code generation.
+
+
+Safety and Reliability Controls
+
+The proposal should explicitly address AI risk.
+
+Key controls:
+
+- Use allowlisted BioSTEAM operations.
+- Validate parameter names, units, ranges, and model compatibility.
+- Run simulations in a sandboxed environment.
+- Log every parameter change and model run.
+- Show assumptions and limitations in every answer.
+- Refuse unsupported model-building requests.
+- Compare outputs against regression tests.
+- Require user confirmation before expensive or long simulations.
+
+This makes the project credible to scientific reviewers.
+
+
+Novelty and Publication Angle
+
+The novelty is not simply "LLM plus BioSTEAM." The stronger contribution is:
+
+"A validated architecture for natural-language access to open-source TEA/LCA process simulation."
+
+Possible contributions:
+
+- A tool-calling framework for scientific simulation software.
+- A benchmark dataset of natural-language BioSTEAM tasks.
+- A validation method for LLM-mediated simulation workflows.
+- A user study showing improved access for non-programmers.
+- An open-source assistant for biorefinery TEA/LCA education and research.
+
+Potential venues:
+
+- ACS Sustainable Chemistry & Engineering
+- Computers & Chemical Engineering
+- Journal of Open Source Software
+- Bioresource Technology Reports
+- AI for Science workshops or applied ML conferences
+
+
+Final Recommended Version of the Project
+
+If I were pitching this from scratch, I would use this title:
+
+"BioSTEAM Assistant: A Validated Natural-Language Interface for Biorefinery TEA and LCA"
+
+And this one-sentence summary:
+
+"This project will build and evaluate an AI assistant that allows non-programming researchers to query, modify, and interpret validated BioSTEAM biorefinery models through natural language while preserving numerical correctness, reproducibility, and scientific transparency."
+
+That framing is much stronger than "chatbot that writes BioSTEAM code," because it sounds feasible, research-grade, and publishable.

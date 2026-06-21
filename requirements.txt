@@ -1,0 +1,9 @@
+# BioSTEAM AI Assistant - Phase 1 MVP
+# Requires Python 3.12+ (current BioSTEAM/thermosteam use 3.12 syntax)
+
+biosteam>=2.53
+biorefineries>=2.35
+anthropic>=0.111
+streamlit>=1.58
+python-dotenv>=1.0
+pytest>=8.0
