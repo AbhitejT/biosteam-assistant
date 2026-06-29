@@ -89,6 +89,91 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["parameter", "values"],
         },
     },
+    {
+        "name": "compare_scenarios",
+        "description": (
+            "Run one or more named scenarios and compare them against the "
+            "baseline. Each scenario is a set of parameter overrides. Returns "
+            "metrics, absolute deltas, and percent changes vs. baseline for each "
+            "scenario. Use this for 'compare A vs B' questions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scenarios": {
+                    "type": "object",
+                    "description": (
+                        "Mapping of scenario name -> object of {parameter: value}. "
+                        "Example: {\"high enzyme\": {\"glucose_to_ethanol_conversion\": 0.97}}."
+                    ),
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": {"type": "number"},
+                    },
+                }
+            },
+            "required": ["scenarios"],
+        },
+    },
+    {
+        "name": "run_uncertainty",
+        "description": (
+            "Run a Monte Carlo uncertainty analysis: draw the given parameter(s) "
+            "from distributions over their range and report summary statistics "
+            "(mean, std, and 5th/50th/95th percentiles) for every metric. Use this "
+            "for 'how uncertain', 'confidence interval', or 'range of outcomes' "
+            "questions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "distributions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "low": {"type": "number"},
+                            "high": {"type": "number"},
+                            "kind": {
+                                "type": "string",
+                                "enum": ["uniform", "triangular"],
+                            },
+                            "mode": {"type": "number"},
+                        },
+                        "required": ["name", "low", "high"],
+                    },
+                },
+                "n_samples": {
+                    "type": "integer",
+                    "description": "Number of Monte Carlo samples (default 100, max 1000).",
+                },
+            },
+            "required": ["distributions"],
+        },
+    },
+    {
+        "name": "search_docs",
+        "description": (
+            "Search the curated BioSTEAM knowledge base (process background, "
+            "techno-economic glossary, and model/parameter documentation) for "
+            "explanatory text. Use this to ground explanations of concepts, what a "
+            "parameter or metric means, or how a process works, instead of relying "
+            "on general knowledge. Returns the most relevant passages with their "
+            "source. Quote or paraphrase these passages and mention the source."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to look up."},
+                "k": {
+                    "type": "integer",
+                    "description": "Number of passages to return (default 4).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -100,6 +185,8 @@ class ToolDispatcher:
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         RUN_LOG_DIR.mkdir(exist_ok=True)
         self.log_path: Path = RUN_LOG_DIR / f"session_{self.session_id}.jsonl"
+        # Knowledge-base passages retrieved during the current turn (for the UI).
+        self.last_doc_sources: list[dict] = []
 
     def _log(self, record: dict[str, Any]) -> None:
         record["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -135,4 +222,19 @@ class ToolDispatcher:
             return {"metrics": s.run()}
         if name == "run_sensitivity":
             return s.sensitivity(args["parameter"], args["values"])
+        if name == "compare_scenarios":
+            return s.compare_scenarios(args["scenarios"])
+        if name == "run_uncertainty":
+            return s.uncertainty(
+                args["distributions"], args.get("n_samples", 100)
+            )
+        if name == "search_docs":
+            from .rag import get_retriever
+
+            results = get_retriever().search(args["query"], args.get("k", 4))
+            self.last_doc_sources.extend(
+                {"title": r["title"], "source": r["source"], "score": r["score"]}
+                for r in results
+            )
+            return {"results": results}
         raise KeyError(f"Unknown tool '{name}'.")

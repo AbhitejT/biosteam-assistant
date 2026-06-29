@@ -254,9 +254,106 @@ sugarcane_spec = ModelSpec(
 )
 
 
+# --------------------------------------------------------------------------
+# Lipidcane: co-production of ethanol and biodiesel from oil-rich cane
+# --------------------------------------------------------------------------
+def _load_lipidcane():
+    from biorefineries import lipidcane as m
+
+    m.load()
+    return m
+
+
+def _lc_set_lifetime(m, years: float) -> None:
+    start = m.lipidcane_tea.duration[0]
+    m.lipidcane_tea.duration = (start, start + int(years))
+
+
+lipidcane_spec = ModelSpec(
+    key="lipidcane",
+    name="Lipidcane ethanol + biodiesel",
+    description=(
+        "Co-production of ethanol and biodiesel from oil-rich (lipid) sugarcane. "
+        "Sugars are fermented to ethanol while the extracted oil is "
+        "transesterified to biodiesel; bagasse is burned for cogeneration. The "
+        "minimum ethanol selling price is solved with biodiesel sold at its "
+        "co-product price."
+    ),
+    loader=_load_lipidcane,
+    system_getter=lambda m: m.lipidcane_sys,
+    parameters={
+        "feedstock_price": Parameter(
+            name="feedstock_price",
+            description="Lipidcane feedstock purchase price.",
+            units="USD/kg",
+            getter=lambda m: m.lipidcane.price,
+            setter=lambda m, v: setattr(m.lipidcane, "price", v),
+            bounds=(0.0, 0.2),
+        ),
+        "fermentation_efficiency": Parameter(
+            name="fermentation_efficiency",
+            description="Fraction of glucose converted to ethanol during fermentation.",
+            units="fraction",
+            getter=lambda m: m.R301.efficiency,
+            setter=lambda m, v: setattr(m.R301, "efficiency", v),
+            bounds=(0.0, 1.0),
+        ),
+        "plant_lifetime": Parameter(
+            name="plant_lifetime",
+            description="Plant operating lifetime used in the discounted cash flow analysis.",
+            units="years",
+            getter=lambda m: m.lipidcane_tea.duration[1] - m.lipidcane_tea.duration[0],
+            setter=_lc_set_lifetime,
+            bounds=(5, 50),
+        ),
+        "irr": Parameter(
+            name="irr",
+            description="Internal rate of return targeted when solving for product price.",
+            units="fraction",
+            getter=lambda m: m.lipidcane_tea.IRR,
+            setter=lambda m, v: setattr(m.lipidcane_tea, "IRR", v),
+            bounds=(0.0, 0.5),
+        ),
+    },
+    metrics={
+        "mesp_per_gal": Metric(
+            name="mesp_per_gal",
+            description="Minimum ethanol selling price (biodiesel sold at co-product price).",
+            units="USD/gal",
+            getter=lambda m: m.lipidcane_tea.solve_price(m.ethanol) * KG_ETHANOL_PER_GAL,
+        ),
+        "mesp_per_kg": Metric(
+            name="mesp_per_kg",
+            description="Minimum ethanol selling price per kilogram.",
+            units="USD/kg",
+            getter=lambda m: m.lipidcane_tea.solve_price(m.ethanol),
+        ),
+        "ethanol_production": Metric(
+            name="ethanol_production",
+            description="Ethanol product mass flow rate.",
+            units="kg/hr",
+            getter=lambda m: m.ethanol.F_mass,
+        ),
+        "biodiesel_production": Metric(
+            name="biodiesel_production",
+            description="Biodiesel co-product mass flow rate.",
+            units="kg/hr",
+            getter=lambda m: m.biodiesel.F_mass,
+        ),
+        "total_capital_investment": Metric(
+            name="total_capital_investment",
+            description="Total capital investment (TCI).",
+            units="USD",
+            getter=lambda m: m.lipidcane_tea.TCI,
+        ),
+    },
+)
+
+
 REGISTRY: dict[str, ModelSpec] = {
     cornstover_spec.key: cornstover_spec,
     sugarcane_spec.key: sugarcane_spec,
+    lipidcane_spec.key: lipidcane_spec,
 }
 
 
