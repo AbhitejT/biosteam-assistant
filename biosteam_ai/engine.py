@@ -6,24 +6,18 @@ and records a provenance log of every state change and run.
 """
 from __future__ import annotations
 
-import contextlib
-import io
-import warnings
 from typing import Any
 
 import numpy as np
 
 from .models import ModelSpec, get_model_spec, list_models
-
-
-@contextlib.contextmanager
-def _quiet():
-    """Suppress BioSTEAM's verbose cost/convergence warnings and stdout."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            yield
+from .verification import (
+    check_mass_balance,
+    check_negative_flows,
+    check_reaction_balance,
+    quiet as _quiet,
+    summarize,
+)
 
 
 class SimulationSession:
@@ -34,6 +28,8 @@ class SimulationSession:
         # Most recent chartable result (for the UI to render). Shape:
         # {"kind": "sensitivity"|"comparison"|"uncertainty", "data": ...}
         self.last_artifact: dict[str, Any] | None = None
+        # Most recent verification report (for the UI to render).
+        self.last_verification: dict[str, Any] | None = None
 
     # -- model loading -----------------------------------------------------
     @property
@@ -51,6 +47,7 @@ class SimulationSession:
             self._module = spec.loader()
         self.spec = spec
         self.last_artifact = None
+        self.last_verification = None
         # Snapshot baseline values of all registered parameters for reset().
         self._baseline = {
             name: p.get(self._module) for name, p in spec.parameters.items()
@@ -268,6 +265,55 @@ class SimulationSession:
             "parameters": [d["name"] for d in distributions],
             "summary": summary,
             "metric_units": units,
+        }
+
+
+    def verify(
+        self, mass_tol: float = 0.02, reaction_tol: float = 0.5
+    ) -> dict[str, Any]:
+        """Check that the simulated model is physically and economically sane,
+        not merely that it ran. Returns a structured validation report.
+
+        Checks (severity):
+          - Per-unit mass balance closure (warning): inputs vs outputs per unit.
+          - No negative component flows (error).
+          - Reaction mass balance (warning): reaction stoichiometry conserves mass.
+          - Output plausibility (error): metrics finite, MESP/production sensible.
+        """
+        spec = self._require_model()
+        sys = spec.system_getter(self._module)
+
+        with _quiet():
+            checks = [
+                check_mass_balance(sys, mass_tol),
+                check_negative_flows(sys),
+                check_reaction_balance(sys, reaction_tol),
+                self._output_plausibility_check(),
+            ]
+
+        report = summarize(checks, model=spec.key)
+        self.last_verification = report
+        return report
+
+    def _output_plausibility_check(self) -> dict[str, Any]:
+        metrics = self.get_metrics()
+        issues = []
+        for name, m in metrics.items():
+            v = m["value"]
+            if v != v or v in (float("inf"), float("-inf")):
+                issues.append(f"{name} is not finite")
+        mesp = metrics.get("mesp_per_gal", {}).get("value")
+        if mesp is not None and not (0 < mesp < 50):
+            issues.append(f"MESP {mesp:.2f} USD/gal outside plausible range")
+        for prod in ("ethanol_production", "biodiesel_production"):
+            if prod in metrics and metrics[prod]["value"] <= 0:
+                issues.append(f"{prod} is not positive")
+        return {
+            "name": "Output plausibility",
+            "severity": "error",
+            "status": "pass" if not issues else "fail",
+            "detail": "All metrics finite and within plausible ranges."
+                      if not issues else "; ".join(issues),
         }
 
 

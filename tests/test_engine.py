@@ -158,3 +158,36 @@ def test_uncertainty_rejects_out_of_bounds(cornstover_session):
 def test_uncertainty_rejects_unknown_parameter(cornstover_session):
     with pytest.raises(KeyError):
         cornstover_session.uncertainty([{"name": "nope", "low": 0, "high": 1}], n_samples=5)
+
+
+def test_verify_report_structure(cornstover_session):
+    cornstover_session.reset_parameters()
+    cornstover_session.run()
+    rep = cornstover_session.verify()
+    assert rep["overall"] in {"pass", "warn", "fail"}
+    names = {c["name"] for c in rep["checks"]}
+    assert "Per-unit mass balance" in names
+    assert "Output plausibility" in names
+    assert all(c["status"] in {"pass", "warn", "fail"} for c in rep["checks"])
+
+
+def test_verify_baseline_outputs_plausible(cornstover_session):
+    cornstover_session.reset_parameters()
+    cornstover_session.run()
+    rep = cornstover_session.verify()
+    plausibility = next(c for c in rep["checks"] if c["name"] == "Output plausibility")
+    assert plausibility["status"] == "pass"
+
+
+@pytest.mark.parametrize("model_key", sorted(REGISTRY))
+def test_verify_runs_for_every_model(model_key):
+    s = SimulationSession()
+    s.load_model(model_key)
+    s.run()
+    rep = s.verify()
+    # Mass balance and negative-flow checks should never hard-fail for the
+    # curated library models (structural issues surface as warnings).
+    mb = next(c for c in rep["checks"] if c["name"] == "Per-unit mass balance")
+    assert mb["status"] in {"pass", "warn"}
+    neg = next(c for c in rep["checks"] if c["name"] == "No negative flows")
+    assert neg["status"] == "pass"

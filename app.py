@@ -67,6 +67,73 @@ def render_artifact(artifact: dict) -> None:
         st.pyplot(fig)
 
 
+def render_verification(report: dict) -> None:
+    """Render a model validation report card."""
+    overall = report["overall"]
+    label = {"pass": "PASS", "warn": "REVIEW RECOMMENDED", "fail": "FAIL"}[overall]
+    banner = {"pass": st.success, "warn": st.warning, "fail": st.error}[overall]
+    icon = {"pass": "✓", "warn": "!", "fail": "✕"}
+    banner(f"Model validation: {label}")
+    with st.expander("Validation checks", expanded=(overall != "pass")):
+        for c in report["checks"]:
+            st.markdown(f"{icon[c['status']]} **{c['name']}** — {c['detail']}")
+
+
+def render_built_process(built: dict) -> None:
+    """Render a from-scratch process the assistant assembled and simulated."""
+    results = built["results"]
+    st.markdown(f"**Built process: {results['name']}**")
+
+    stream_rows = []
+    for group, role in (("feeds", "feed"), ("intermediates", "intermediate"),
+                        ("products", "product")):
+        for s in results.get(group, []):
+            stream_rows.append({
+                "stream": s["name"], "role": role, "phase": s["phase"],
+                "T (K)": s["T_K"], "kg/hr": s["F_mass_kg_hr"],
+                "kmol/hr": s["F_mol_kmol_hr"],
+            })
+    if stream_rows:
+        st.caption("Streams")
+        st.dataframe(pd.DataFrame(stream_rows), hide_index=True)
+
+    unit_rows = [
+        {"unit": u["id"], "type": u["type"],
+         "installed cost (USD)": u["installed_cost_usd"]}
+        for u in results.get("units", [])
+    ]
+    if unit_rows:
+        st.caption("Unit operations")
+        st.dataframe(pd.DataFrame(unit_rows), hide_index=True)
+    st.caption(
+        f"Total installed equipment cost: "
+        f"${results['total_installed_equipment_cost_usd']:,.0f}"
+    )
+
+    econ = results.get("economics")
+    if econ:
+        msp = econ["min_selling_price_usd_per_kg"]
+        c1, c2 = st.columns(2)
+        c1.metric(
+            f"Min. selling price ({econ['product']})", f"${msp:,.3f}/kg"
+        )
+        c2.metric(
+            "Total capital investment",
+            f"${econ['total_capital_investment_usd']:,.0f}",
+        )
+        a = econ["assumptions"]
+        st.caption(
+            "Simplified TEA estimate — assumptions: "
+            f"IRR {a['IRR']:.0%}, {int(a['plant_years'])} yr, "
+            f"{int(a['operating_days'])} days/yr, Lang {a['lang_factor']}, "
+            f"FOC {a['FOC_over_FCI']:.0%} of FCI. "
+            f"Material cost ${econ['material_cost_usd_per_yr']:,.0f}/yr."
+        )
+
+    if built.get("verification"):
+        render_verification(built["verification"])
+
+
 def render_sources(sources: list[dict]) -> None:
     """Show which knowledge-base passages grounded the explanation."""
     seen = set()
@@ -133,7 +200,8 @@ with st.sidebar:
         "- Load corn stover and give me the minimum ethanol selling price.\n"
         "- Compare ethanol price at 80% vs 95% fermentation conversion.\n"
         "- Run a sensitivity analysis on feedstock price from 0.04 to 0.08.\n"
-        "- How uncertain is the price if conversion ranges 0.80-0.97?"
+        "- How uncertain is the price if conversion ranges 0.80-0.97?\n"
+        "- Build a process: react ethanol + acetic acid to ethyl acetate, then flash it."
     )
 
 for msg in st.session_state.history:
@@ -141,6 +209,10 @@ for msg in st.session_state.history:
         st.markdown(msg["content"])
         if msg.get("artifact"):
             render_artifact(msg["artifact"])
+        if msg.get("verification"):
+            render_verification(msg["verification"])
+        if msg.get("built"):
+            render_built_process(msg["built"])
         if msg.get("sources"):
             render_sources(msg["sources"])
 
@@ -174,10 +246,35 @@ if prompt:
                 render_artifact(artifact)
                 orch.dispatcher.session.last_artifact = None
 
+            verification = None
+            if orch.dispatcher.session.is_loaded and orch.dispatcher.session.last_verification:
+                verification = copy.deepcopy(orch.dispatcher.session.last_verification)
+                render_verification(verification)
+                orch.dispatcher.session.last_verification = None
+
+            built = None
+            if orch.dispatcher.builder.last_results:
+                built = {
+                    "results": copy.deepcopy(orch.dispatcher.builder.last_results),
+                    "verification": copy.deepcopy(
+                        orch.dispatcher.builder.last_verification
+                    ),
+                }
+                render_built_process(built)
+                orch.dispatcher.builder.last_results = None
+                orch.dispatcher.builder.last_verification = None
+
             sources = list(orch.dispatcher.last_doc_sources)
             if sources:
                 render_sources(sources)
 
             st.session_state.history.append(
-                {"role": "assistant", "content": answer, "artifact": artifact, "sources": sources}
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "artifact": artifact,
+                    "verification": verification,
+                    "built": built,
+                    "sources": sources,
+                }
             )

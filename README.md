@@ -1,4 +1,4 @@
-# BioSTEAM AI Assistant (Phase 1 MVP)
+# BioSTEAM AI Assistant
 
 A validated natural-language interface over a curated set of
 [BioSTEAM](https://biosteam.readthedocs.io/) biorefinery models. Ask
@@ -6,9 +6,11 @@ techno-economic questions in plain English; every answer is grounded in a real
 BioSTEAM simulation, not in the language model's imagination.
 
 Phase 1 delivered a **validated query assistant** over pre-built models, with
-numerical regression tests and full provenance logging. Phase 2 adds **scenario
+numerical regression tests and full provenance logging. Phase 2 added **scenario
 comparison, Monte Carlo uncertainty analysis, guided multi-turn scenario
-building, and charts** in the web UI.
+building, RAG-grounded explanations, and charts** in the web UI. Phase 3 adds a
+**guarded process builder**: the assistant can now assemble, simulate, and verify
+a *new* flowsheet from typed building blocks — not just drive pre-wired models.
 
 ## Why this design
 
@@ -55,10 +57,70 @@ The LLM drives an allowlisted set of tools:
 | `compare_scenarios` | run named scenarios and report deltas vs. baseline |
 | `run_sensitivity` | sweep one parameter across a range |
 | `run_uncertainty` | Monte Carlo over parameter distributions (mean, std, p5/p50/p95) |
+| `verify_model` | correctness checks (mass balance, reactions, plausibility) with pass/warn/fail |
+| `list_building_blocks` | list the chemicals + unit blocks available for building new processes |
+| `build_process` | assemble, simulate, and verify a **new** flowsheet from typed blocks |
 | `search_docs` | retrieve passages from the knowledge base to ground explanations (RAG) |
 
 Comparison, sensitivity, and uncertainty results are rendered as charts in the
-Streamlit UI, and grounded explanations show their knowledge-base sources.
+Streamlit UI; grounded explanations show their knowledge-base sources; and
+verification produces a model-validation card.
+
+### Verification layer (trust, not just "it ran")
+
+A simulation that converges can still be wrong. `verify_model` checks that the
+*current* model is physically and economically sane and returns a report with an
+overall status of **pass**, **warn** (review recommended), or **fail**:
+
+- **Per-unit mass balance** — every unit's inputs must equal its outputs (warning).
+- **No negative flows** — no negative component flows anywhere (error).
+- **Reaction mass balance** — reaction stoichiometry conserves mass (warning).
+- **Output plausibility** — metrics finite; MESP and production in sane ranges (error).
+
+The assistant is instructed to surface any warning/failure and temper its answer
+accordingly, rather than presenting flagged numbers as fully trustworthy. These
+checks live in `biosteam_ai/verification.py` and are shared verbatim by both the
+curated models and the process builder, so "verified" means the same thing
+everywhere.
+
+### Process builder (assembling new flowsheets)
+
+Beyond driving curated models, the assistant can build a *new* process from a
+declarative spec: a set of chemicals, feed streams, and unit blocks wired
+together by stream name. `build_process` validates the spec, constructs a real
+BioSTEAM flowsheet, simulates it, and runs the verification layer above — all in
+one guarded step. Supported blocks (see `list_building_blocks`):
+
+| Block | What it does |
+|-------|--------------|
+| `mixer` | combine 2+ inlet streams into one |
+| `reactor` | one stoichiometric reaction at a fixed conversion (mass conserved exactly) |
+| `flash` | vapour/liquid split by equilibrium at a given vapour fraction |
+| `splitter` | split one stream into two by a fixed fraction |
+| `heater` | heat/cool a stream to a target temperature (with duty + cost) |
+
+Safety comes from **allowlists**: only a curated set of chemicals (validated to
+have complete thermo data and survive a flash) and the block types above are
+permitted; anything else is rejected with a clear message. The custom reactor
+block conserves mass and never crashes on costing, unlike BioSTEAM's stirred-tank
+reactor classes on gas-phase or isothermal duties.
+
+**Economics (minimum selling price).** Beyond equipment cost, a built process
+can return a **minimum product selling price**. Give each feed a `price`
+(USD/kg) and name the terminal `product` stream to price; the builder wraps the
+flowsheet in a `SimpleTEA` (Lang-factor capital from installed equipment cost,
+fixed operating cost as a fraction of fixed capital) and solves the break-even
+price. Financial assumptions default to IRR 10%, 20-year life, 330 operating
+days/yr, Lang factor 3.0, and FOC = 5% of FCI, and can be overridden per build
+via `economics`. A fifth **economic-plausibility** check (price finite and
+positive) is added to the verification report.
+
+**Honest boundaries.** The built-process selling price comes from a *simplified*
+TEA and is an estimate — the curated registry models, with their bespoke TEA
+wiring, remain the reference for fully-validated prices. Recycles are not yet
+supported (units must be ordered so each input already exists). The assistant is
+told to state its assumptions and point to the registry models when a request
+exceeds the palette.
 
 ### Retrieval-augmented explanations (RAG)
 
@@ -121,6 +183,9 @@ python -m biosteam_ai.cli
 - "Compare ethanol price at 80% vs 95% fermentation conversion."
 - "Run a sensitivity analysis on feedstock price from 0.04 to 0.08 USD/kg."
 - "How uncertain is the ethanol price if conversion ranges from 0.80 to 0.97?"
+- "Build a process: react 100 kmol/hr ethanol with 100 kmol/hr acetic acid to ethyl
+  acetate at 60% conversion, then flash it. Is it valid?"
+- "...and if the feed costs $0.50/kg, what's the minimum selling price of the product?"
 
 ## Tests
 
@@ -135,21 +200,27 @@ pytest -v
 
 ```
 biosteam_ai/
-  config.py            # env + constants
-  models/registry.py   # declarative model specs (params, metrics, bounds)
-  engine.py            # SimulationSession: load/set/run/reset/sensitivity/compare/uncertainty
-  tools.py             # LLM tool schemas + logging dispatcher
-  orchestrator.py      # Claude tool-calling loop
-  rag/retriever.py     # TF-IDF retrieval over the knowledge base
-  rag/knowledge/*.md   # curated BioSTEAM/TEA knowledge
-  cli.py               # terminal chat
-app.py                 # Streamlit chat UI (charts + sources)
-tests/test_engine.py   # regression tests vs raw BioSTEAM
-tests/test_rag.py      # retrieval tests
+  config.py             # env + constants
+  models/registry.py    # declarative model specs (params, metrics, bounds)
+  engine.py             # SimulationSession: load/set/run/reset/sensitivity/compare/uncertainty/verify
+  verification.py       # shared correctness checks (used by engine + builder)
+  builder/blocks.py     # chemical allowlist + typed unit-block palette
+  builder/process_builder.py  # ProcessBuilder + SimpleTEA: spec -> construct -> simulate -> price -> verify
+  tools.py              # LLM tool schemas + logging dispatcher
+  orchestrator.py       # Claude tool-calling loop
+  rag/retriever.py      # TF-IDF retrieval over the knowledge base
+  rag/knowledge/*.md    # curated BioSTEAM/TEA knowledge
+  cli.py                # terminal chat
+app.py                  # Streamlit chat UI (charts + sources + built processes)
+tests/test_engine.py    # regression tests vs raw BioSTEAM
+tests/test_builder.py   # process-builder tests (assemble + simulate + verify)
+tests/test_rag.py       # retrieval tests
 ```
 
 ## What's next
 
+- Extend the process builder: recycles/tear streams, more unit types and
+  chemicals, and full TEA (MESP) on built processes.
 - LCA metrics (carbon intensity) using literature-sourced characterization factors.
 - Upgrade retrieval from TF-IDF to embeddings, and expand the knowledge corpus.
 - Deployed web app, downloadable reports, and a non-programmer user study.

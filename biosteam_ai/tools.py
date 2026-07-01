@@ -12,6 +12,7 @@ from typing import Any
 
 import biosteam
 
+from .builder import ProcessBuilder, palette
 from .config import RUN_LOG_DIR
 from .engine import SimulationSession, available_models
 
@@ -153,6 +154,128 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "verify_model",
+        "description": (
+            "Run correctness checks on the currently loaded/simulated model and "
+            "return a validation report: per-unit mass balance closure, absence of "
+            "negative flows, reaction mass balance, and output plausibility. Use "
+            "this when the user asks whether results are trustworthy/valid, or "
+            "proactively before presenting results for an unfamiliar configuration. "
+            "Overall status is pass, warn (review recommended), or fail."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "list_building_blocks",
+        "description": (
+            "List the palette for building a NEW process from scratch: the "
+            "allowed chemicals and the unit-block types (mixer, reactor, flash, "
+            "splitter, heater) with their parameters. Call this before "
+            "build_process so you only use supported chemicals and blocks."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "build_process",
+        "description": (
+            "Assemble, simulate, and verify a NEW custom process from typed "
+            "building blocks. Use this when the user wants to model a process "
+            "that is not one of the curated models (e.g. 'build a reactor that "
+            "converts X to Y then flash it'). Streams are referenced by name: a "
+            "unit's 'ins' must be a feed name or an earlier unit's output; its "
+            "'outs' name new streams. Flows are kmol/hr, temperatures K, "
+            "pressures Pa. Returns stream results, equipment cost, and a "
+            "verification report. To also get a minimum product selling price, "
+            "give feeds a 'price' (USD/kg) and set 'product' to the terminal "
+            "output stream to price; optionally override 'economics'. Only "
+            "chemicals/blocks from list_building_blocks are allowed; invalid "
+            "specs are rejected with a message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "A label for the process."},
+                "chemicals": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Chemicals present (must be in the allowlist).",
+                },
+                "feeds": {
+                    "type": "array",
+                    "description": "Feed streams entering the process.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "flows": {
+                                "type": "object",
+                                "additionalProperties": {"type": "number"},
+                                "description": "Chemical -> molar flow (kmol/hr).",
+                            },
+                            "T": {"type": "number", "description": "Temperature K (default 298.15)."},
+                            "P": {"type": "number", "description": "Pressure Pa (default 101325)."},
+                            "price": {"type": "number", "description": "Feed price USD/kg (for TEA)."},
+                        },
+                        "required": ["name", "flows"],
+                    },
+                },
+                "units": {
+                    "type": "array",
+                    "description": (
+                        "Unit blocks in process order. Each has id, type, ins, "
+                        "outs plus type-specific parameters: reactor needs "
+                        "reaction/reactant/conversion (optional T,P); flash needs "
+                        "V (optional P); splitter needs split; heater needs T."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "type": {
+                                "type": "string",
+                                "enum": ["mixer", "reactor", "flash", "splitter", "heater"],
+                            },
+                            "ins": {"type": "array", "items": {"type": "string"}},
+                            "outs": {"type": "array", "items": {"type": "string"}},
+                            "reaction": {"type": "string"},
+                            "reactant": {"type": "string"},
+                            "conversion": {"type": "number"},
+                            "V": {"type": "number"},
+                            "split": {"type": "number"},
+                            "T": {"type": "number"},
+                            "P": {"type": "number"},
+                        },
+                        "required": ["id", "type", "ins", "outs"],
+                    },
+                },
+                "product": {
+                    "type": "string",
+                    "description": (
+                        "Name of the terminal output stream to solve a minimum "
+                        "selling price for (optional; requires feed prices)."
+                    ),
+                },
+                "economics": {
+                    "type": "object",
+                    "description": (
+                        "Optional financial-assumption overrides. Defaults: "
+                        "IRR 0.10, plant_years 20, income_tax 0.21, "
+                        "operating_days 330, lang_factor 3.0, FOC_over_FCI 0.05."
+                    ),
+                    "properties": {
+                        "IRR": {"type": "number"},
+                        "plant_years": {"type": "number"},
+                        "income_tax": {"type": "number"},
+                        "operating_days": {"type": "number"},
+                        "lang_factor": {"type": "number"},
+                        "FOC_over_FCI": {"type": "number"},
+                    },
+                },
+            },
+            "required": ["chemicals", "feeds", "units"],
+        },
+    },
+    {
         "name": "search_docs",
         "description": (
             "Search the curated BioSTEAM knowledge base (process background, "
@@ -182,6 +305,7 @@ class ToolDispatcher:
 
     def __init__(self, session: SimulationSession | None = None, session_id: str | None = None):
         self.session = session or SimulationSession()
+        self.builder = ProcessBuilder()
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         RUN_LOG_DIR.mkdir(exist_ok=True)
         self.log_path: Path = RUN_LOG_DIR / f"session_{self.session_id}.jsonl"
@@ -228,6 +352,13 @@ class ToolDispatcher:
             return s.uncertainty(
                 args["distributions"], args.get("n_samples", 100)
             )
+        if name == "verify_model":
+            return s.verify()
+        if name == "list_building_blocks":
+            return palette()
+        if name == "build_process":
+            spec = {k: v for k, v in args.items()}
+            return self.builder.build(spec)
         if name == "search_docs":
             from .rag import get_retriever
 

@@ -44,7 +44,28 @@ Choosing tools:
 - "Compare A vs B" / multiple scenarios -> compare_scenarios.
 - "How sensitive" across a range of one parameter -> run_sensitivity.
 - "How uncertain" / "confidence interval" / "range of outcomes" -> run_uncertainty.
+- "Is this valid/trustworthy", or before presenting an unusual configuration -> verify_model.
+- "Build/model a NEW process not in the model list" (e.g. "make a reactor that \
+  converts A to B, then flash it") -> list_building_blocks, then build_process.
 Numbers always come from simulation tools; explanations are grounded with search_docs.
+
+Trust: build_process and verify_model both return a verification report. If it
+returns warn or fail, tell the user plainly which check was flagged and what it
+means. Do not present numbers as fully trustworthy if verification flagged a
+problem. Note especially: a "warn" on reaction mass balance usually means the
+reaction the user gave is not stoichiometrically balanced -- point this out.
+
+Building new processes (build_process): only the chemicals and unit blocks from
+list_building_blocks are supported; if the user needs something outside the
+palette (other chemicals, recycles), say so honestly and point them to the
+curated registry models where relevant. A built process reports stream flows and
+installed equipment cost. To also report a minimum product selling price (MSP),
+give each feed a 'price' (USD/kg) and set 'product' to the terminal stream to
+price; you may override 'economics' (IRR, plant_years, etc.). Always state the
+financial assumptions used and that the MSP comes from a simplified TEA
+(Lang-factor capital, fixed operating cost as a fraction of FCI) -- it is an
+estimate, not a fully validated price like the curated registry models produce.
+Balance reactions yourself before building.
 
 Guided scenario building: when a request is underspecified (e.g. "model a \
 biorefinery in New Jersey"), do not silently assume values. First load the \
@@ -88,6 +109,8 @@ class Orchestrator:
     ) -> str:
         """Send a user message, run the tool loop, and return the final text."""
         self.dispatcher.last_doc_sources = []
+        self.dispatcher.builder.last_results = None
+        self.dispatcher.builder.last_verification = None
         self.messages.append({"role": "user", "content": user_message})
 
         for _ in range(self.max_tool_iterations):
