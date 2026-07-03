@@ -8,9 +8,12 @@ BioSTEAM simulation, not in the language model's imagination.
 Phase 1 delivered a **validated query assistant** over pre-built models, with
 numerical regression tests and full provenance logging. Phase 2 added **scenario
 comparison, Monte Carlo uncertainty analysis, guided multi-turn scenario
-building, RAG-grounded explanations, and charts** in the web UI. Phase 3 adds a
-**guarded process builder**: the assistant can now assemble, simulate, and verify
-a *new* flowsheet from typed building blocks — not just drive pre-wired models.
+building, RAG-grounded explanations, and charts** in the web UI. Phase 3 added a
+**guarded process builder**: the assistant can assemble, simulate, and verify a
+*new* flowsheet from typed building blocks — not just drive pre-wired models.
+Phase 4 rounds it out for real use: **recycle loops**, a **minimum selling
+price** and **direct carbon emissions** on built processes, and **downloadable
+session reports**.
 
 ## Why this design
 
@@ -59,7 +62,7 @@ The LLM drives an allowlisted set of tools:
 | `run_uncertainty` | Monte Carlo over parameter distributions (mean, std, p5/p50/p95) |
 | `verify_model` | correctness checks (mass balance, reactions, plausibility) with pass/warn/fail |
 | `list_building_blocks` | list the chemicals + unit blocks available for building new processes |
-| `build_process` | assemble, simulate, and verify a **new** flowsheet from typed blocks |
+| `build_process` | assemble, simulate, and verify a **new** flowsheet from typed blocks (with recycles, selling price, and direct carbon) |
 | `search_docs` | retrieve passages from the knowledge base to ground explanations (RAG) |
 
 Comparison, sensitivity, and uncertainty results are rendered as charts in the
@@ -105,6 +108,13 @@ permitted; anything else is rejected with a clear message. The custom reactor
 block conserves mass and never crashes on costing, unlike BioSTEAM's stirred-tank
 reactor classes on gas-phase or isothermal duties.
 
+**Recycle loops.** Real biorefineries recycle unreacted feed. Declare recycle
+(tear) stream names in `recycles` and they may be read before they are produced;
+the builder creates them as empty tear streams and lets the solver converge the
+loop. Each recycle must be produced by exactly one unit and consumed by another
+(validated up front). Recovering unreacted feed through a recycle typically
+lowers the minimum selling price.
+
 **Economics (minimum selling price).** Beyond equipment cost, a built process
 can return a **minimum product selling price**. Give each feed a `price`
 (USD/kg) and name the terminal `product` stream to price; the builder wraps the
@@ -112,15 +122,21 @@ flowsheet in a `SimpleTEA` (Lang-factor capital from installed equipment cost,
 fixed operating cost as a fraction of fixed capital) and solves the break-even
 price. Financial assumptions default to IRR 10%, 20-year life, 330 operating
 days/yr, Lang factor 3.0, and FOC = 5% of FCI, and can be overridden per build
-via `economics`. A fifth **economic-plausibility** check (price finite and
-positive) is added to the verification report.
+via `economics`. An **economic-plausibility** check (price finite and positive)
+is added to the verification report.
+
+**Direct carbon emissions.** Results include a `carbon` section: the direct
+greenhouse gases (CO2, CH4) leaving the process in outlet streams, expressed as
+CO2-equivalent using IPCC AR5 GWP100 factors, plus an intensity per kg of
+product. This is a **gate-to-gate direct** figure — it deliberately excludes
+upstream feedstock/energy burdens and biogenic-carbon accounting, so it is not a
+full cradle-to-grave LCA, and the assistant states that scope.
 
 **Honest boundaries.** The built-process selling price comes from a *simplified*
 TEA and is an estimate — the curated registry models, with their bespoke TEA
-wiring, remain the reference for fully-validated prices. Recycles are not yet
-supported (units must be ordered so each input already exists). The assistant is
-told to state its assumptions and point to the registry models when a request
-exceeds the palette.
+wiring, remain the reference for fully-validated prices; and the carbon figure is
+direct emissions only, not a full LCA. The assistant is told to state its
+assumptions and point to the registry models when a request exceeds the palette.
 
 ### Retrieval-augmented explanations (RAG)
 
@@ -136,13 +152,22 @@ Retrieval uses TF-IDF + cosine similarity (scikit-learn) — no embedding API or
 extra credentials needed. The `Retriever` interface (`search(query, k)`) is
 designed so an embedding/vector backend can replace it without changing callers.
 
+### Exportable reports
+
+Any session can be exported from the sidebar as a **Markdown report** (a
+readable record of the conversation plus built-process streams, economics,
+carbon, and validation) or as **JSON** (the full structured results). Both embed
+the assistant model and BioSTEAM version, and reference the provenance log, so an
+analysis is reproducible and shareable without touching code.
+
 ### Not yet supported (deferred)
 
-- **LCA / carbon intensity (GWP).** The bundled `cornstover` and `sugarcane`
-  models do not define life-cycle characterization factors, so the assistant
-  will not report carbon metrics rather than fabricate them. Adding LCA requires
-  sourcing characterization factors (e.g. from GREET) — planned for a later
-  increment.
+- **Full life-cycle assessment (cradle-to-grave GWP).** Built processes report
+  *direct* process CO2e (see above), but a complete LCA — upstream feedstock and
+  energy burdens, biogenic-carbon credits, allocation across co-products — is not
+  included. The curated `cornstover`/`sugarcane`/`lipidcane` models also do not
+  define life-cycle characterization factors, so the assistant reports direct
+  emissions honestly rather than fabricating a full footprint.
 
 ## Setup
 
@@ -163,7 +188,13 @@ cp .env.example .env
 
 ## Run
 
-Web UI:
+Web UI (quickstart — checks your `.env`, then launches):
+
+```bash
+./run.sh
+```
+
+or directly:
 
 ```bash
 streamlit run app.py
@@ -186,6 +217,8 @@ python -m biosteam_ai.cli
 - "Build a process: react 100 kmol/hr ethanol with 100 kmol/hr acetic acid to ethyl
   acetate at 60% conversion, then flash it. Is it valid?"
 - "...and if the feed costs $0.50/kg, what's the minimum selling price of the product?"
+- "Add a recycle loop that sends 40% of the liquid back to the reactor and recompute the price."
+- "What are the direct CO2-equivalent emissions of that process?"
 
 ## Tests
 
@@ -205,22 +238,24 @@ biosteam_ai/
   engine.py             # SimulationSession: load/set/run/reset/sensitivity/compare/uncertainty/verify
   verification.py       # shared correctness checks (used by engine + builder)
   builder/blocks.py     # chemical allowlist + typed unit-block palette
-  builder/process_builder.py  # ProcessBuilder + SimpleTEA: spec -> construct -> simulate -> price -> verify
+  builder/process_builder.py  # ProcessBuilder + SimpleTEA: spec -> construct -> simulate -> price -> carbon -> verify
+  reporting.py          # Markdown/JSON session report generation
   tools.py              # LLM tool schemas + logging dispatcher
   orchestrator.py       # Claude tool-calling loop
   rag/retriever.py      # TF-IDF retrieval over the knowledge base
   rag/knowledge/*.md    # curated BioSTEAM/TEA knowledge
   cli.py                # terminal chat
-app.py                  # Streamlit chat UI (charts + sources + built processes)
+app.py                  # Streamlit chat UI (charts, sources, built processes, report export)
+run.sh                  # quickstart launcher for the web UI
 tests/test_engine.py    # regression tests vs raw BioSTEAM
-tests/test_builder.py   # process-builder tests (assemble + simulate + verify)
+tests/test_builder.py   # process-builder tests (assemble, recycle, economics, carbon, verify)
 tests/test_rag.py       # retrieval tests
 ```
 
 ## What's next
 
-- Extend the process builder: recycles/tear streams, more unit types and
-  chemicals, and full TEA (MESP) on built processes.
-- LCA metrics (carbon intensity) using literature-sourced characterization factors.
+- Extend the process builder further: more unit types (distillation columns,
+  pumps/compressors) and a larger chemical palette.
+- Full cradle-to-grave LCA using literature-sourced characterization factors.
 - Upgrade retrieval from TF-IDF to embeddings, and expand the knowledge corpus.
-- Deployed web app, downloadable reports, and a non-programmer user study.
+- Deploy the web app publicly and run a non-programmer user study.

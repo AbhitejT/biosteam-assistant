@@ -184,12 +184,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "converts X to Y then flash it'). Streams are referenced by name: a "
             "unit's 'ins' must be a feed name or an earlier unit's output; its "
             "'outs' name new streams. Flows are kmol/hr, temperatures K, "
-            "pressures Pa. Returns stream results, equipment cost, and a "
-            "verification report. To also get a minimum product selling price, "
-            "give feeds a 'price' (USD/kg) and set 'product' to the terminal "
-            "output stream to price; optionally override 'economics'. Only "
-            "chemicals/blocks from list_building_blocks are allowed; invalid "
-            "specs are rejected with a message."
+            "pressures Pa. Returns stream results, equipment cost, direct "
+            "greenhouse-gas emissions, and a verification report. To also get a "
+            "minimum product selling price, give feeds a 'price' (USD/kg) and "
+            "set 'product' to the terminal output stream to price; optionally "
+            "override 'economics'. For recycle loops (feeding a downstream "
+            "stream back upstream), list those stream names in 'recycles' so "
+            "they may be read before they are produced. Only chemicals/blocks "
+            "from list_building_blocks are allowed; invalid specs are rejected "
+            "with a message."
         ),
         "input_schema": {
             "type": "object",
@@ -199,6 +202,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Chemicals present (must be in the allowlist).",
+                },
+                "recycles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of recycle (tear) streams that are fed back "
+                        "upstream. Each must be produced by exactly one unit and "
+                        "consumed by another. Enables loops."
+                    ),
                 },
                 "feeds": {
                     "type": "array",

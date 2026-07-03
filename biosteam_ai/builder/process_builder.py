@@ -27,6 +27,16 @@ from .blocks import BLOCK_TYPES, CHEMICALS
 
 _flowsheet_counter = itertools.count(1)
 
+# IPCC AR5 100-year global warming potentials (kg CO2-eq per kg), used only for
+# the greenhouse gases that appear in our chemical allowlist. These are direct,
+# well-established characterization factors -- not fabricated -- and cover only
+# the process's own outlet emissions (a gate-to-gate DIRECT figure), not a full
+# cradle-to-grave life-cycle assessment.
+GWP100 = {
+    "CO2": 1.0,
+    "CH4": 28.0,
+}
+
 
 class BuilderError(ValueError):
     """Raised for an invalid process spec, with a user-facing message."""
@@ -129,21 +139,24 @@ class ProcessBuilder:
         Returns ``{"spec", "results", "verification"}``. Raises
         :class:`BuilderError` with an explanatory message on invalid input.
         """
-        chemicals, feeds, units = self._validate_spec(spec)
+        chemicals, feeds, units, recycles = self._validate_spec(spec)
         name = str(spec.get("name") or "custom process")
         product = spec.get("product")
         economics = self._validate_economics(spec.get("economics"))
 
         with quiet():
-            sys, streams = self._construct(chemicals, feeds, units)
+            sys, streams = self._construct(chemicals, feeds, units, recycles)
             sys.simulate()
             econ = None
             if product is not None:
                 econ = self._economics(sys, streams[product], product, economics)
+            carbon = self._carbon(sys, econ)
 
         self._sys = sys
         self.last_spec = spec
-        self.last_results = self._results(name, sys, streams, feeds, units, econ)
+        self.last_results = self._results(
+            name, sys, streams, feeds, units, econ, carbon
+        )
         self.last_verification = self._verify(name, sys, econ)
         return {
             "spec": {"name": name, "chemicals": chemicals,
@@ -203,10 +216,44 @@ class ProcessBuilder:
             "product_flow_kg_per_hr": round(float(product_stream.F_mass), 3),
         }
 
+    def _carbon(
+        self, sys: Any, econ: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Direct greenhouse-gas emissions leaving the process boundary.
+
+        Sums CO2 and CH4 in terminal outlet streams (streams with no
+        downstream sink) and weights them by IPCC AR5 GWP100 factors. This is a
+        gate-to-gate DIRECT figure covering only the process's own outlet
+        emissions -- deliberately not a full cradle-to-grave LCA (no upstream
+        feedstock/energy burdens, no biogenic-carbon accounting).
+        """
+        terminal = [s for s in sys.streams if not s.sink]
+        by_gas: dict[str, float] = {}
+        for gas, gwp in GWP100.items():
+            mass = 0.0
+            for s in terminal:
+                if gas in s.chemicals.IDs:
+                    mass += float(s.imass[gas])
+            if mass > 1e-9:
+                by_gas[gas] = round(mass, 4)
+        co2e = sum(GWP100[g] * m for g, m in by_gas.items())
+        out = {
+            "scope": "direct process outlet emissions (gate-to-gate), not full LCA",
+            "gwp_basis": "IPCC AR5 GWP100",
+            "direct_ghg_kg_per_hr": by_gas,
+            "co2e_kg_per_hr": round(co2e, 3),
+        }
+        if econ is not None:
+            flow = econ.get("product_flow_kg_per_hr", 0.0)
+            if flow and flow > 1e-9:
+                out["co2e_kg_per_kg_product"] = round(co2e / flow, 4)
+                out["product"] = econ["product"]
+        return out
+
     # -- validation --------------------------------------------------------
     def _validate_spec(
         self, spec: dict[str, Any]
-    ) -> tuple[list[str], list[dict], list[dict]]:
+    ) -> tuple[list[str], list[dict], list[dict], list[str]]:
         if not isinstance(spec, dict):
             raise BuilderError("Process spec must be an object.")
 
@@ -221,6 +268,13 @@ class ProcessBuilder:
             )
         chem_set = set(chemicals)
 
+        # Recycle (tear) streams may be read before they are produced. They are
+        # created empty up front and converged by the solver.
+        recycles = spec.get("recycles") or []
+        if not isinstance(recycles, list):
+            raise BuilderError("'recycles' must be a list of stream names.")
+        recycle_set = set(recycles)
+
         feeds = spec.get("feeds") or []
         if not feeds:
             raise BuilderError("Provide at least one feed stream.")
@@ -231,6 +285,8 @@ class ProcessBuilder:
                 raise BuilderError("Every feed needs a 'name'.")
             if nm in stream_names:
                 raise BuilderError(f"Duplicate stream name '{nm}'.")
+            if nm in recycle_set:
+                raise BuilderError(f"'{nm}' cannot be both a feed and a recycle.")
             flows = f.get("flows") or {}
             if not flows:
                 raise BuilderError(f"Feed '{nm}' has no 'flows'.")
@@ -243,6 +299,9 @@ class ProcessBuilder:
             if f.get("price") is not None and float(f["price"]) < 0:
                 raise BuilderError(f"Feed '{nm}': price must be >= 0.")
             stream_names.add(nm)
+
+        # Recycle streams exist from the start (as tear streams).
+        stream_names |= recycle_set
 
         units = spec.get("units") or []
         if not units:
@@ -270,19 +329,37 @@ class ProcessBuilder:
                 if s not in stream_names:
                     raise BuilderError(
                         f"Unit '{uid}' reads stream '{s}' before it is "
-                        f"produced. Order units so inputs exist first; "
-                        f"recycles are not yet supported."
+                        f"produced. Order units so inputs exist first, or "
+                        f"declare '{s}' in 'recycles' if it is a recycle loop."
                     )
                 consumed.add(s)
             for s in outs:
-                if s in stream_names:
+                # A recycle stream is produced (closed) by exactly one unit; it
+                # already exists as a tear stream, so that is expected.
+                if s in stream_names and s not in recycle_set:
                     raise BuilderError(
                         f"Unit '{uid}' output '{s}' reuses an existing stream "
                         f"name; output names must be new."
                     )
+                if s in recycle_set and s in produced:
+                    raise BuilderError(
+                        f"Recycle stream '{s}' is produced by more than one "
+                        f"unit; a recycle must be closed by exactly one unit."
+                    )
                 stream_names.add(s)
                 produced.add(s)
             self._validate_unit_params(uid, utype, u, chem_set)
+
+        # Every declared recycle must be both produced and consumed.
+        for r in recycles:
+            if r not in produced:
+                raise BuilderError(
+                    f"Recycle '{r}' is never produced by any unit's output."
+                )
+            if r not in consumed:
+                raise BuilderError(
+                    f"Recycle '{r}' is never consumed by any unit's input."
+                )
 
         product = spec.get("product")
         if product is not None:
@@ -293,7 +370,7 @@ class ProcessBuilder:
                     f"(one of {sorted(terminal)}), got '{product}'."
                 )
 
-        return list(chemicals), feeds, units
+        return list(chemicals), feeds, units, list(recycles)
 
     @staticmethod
     def _check_arity(uid: str, utype: str, ins: list, outs: list) -> None:
@@ -340,13 +417,17 @@ class ProcessBuilder:
 
     # -- construction ------------------------------------------------------
     def _construct(
-        self, chemicals: list[str], feeds: list[dict], units: list[dict]
+        self, chemicals: list[str], feeds: list[dict], units: list[dict],
+        recycles: list[str] | None = None,
     ) -> tuple[Any, dict[str, Any]]:
         flowsheet = bst.Flowsheet(f"builder_{next(_flowsheet_counter)}")
         bst.main_flowsheet.set_flowsheet(flowsheet)
         bst.settings.set_thermo(chemicals)
 
         streams: dict[str, Any] = {}
+        # Recycle tear streams start empty; the solver converges them.
+        for r in (recycles or []):
+            streams[r] = bst.Stream(r)
         for f in feeds:
             stream = bst.Stream(
                 f["name"],
@@ -373,6 +454,12 @@ class ProcessBuilder:
     ) -> Any:
         utype, uid = u["type"], u["id"]
 
+        # If an output names an existing recycle tear stream, connect to that
+        # object so the loop closes; otherwise pass the name to create a stream.
+        out_args = [
+            streams[name] if name in streams else name for name in out_names
+        ]
+
         def register(outs):
             for name, stream in zip(out_names, outs):
                 stream.ID = name
@@ -380,7 +467,7 @@ class ProcessBuilder:
             return outs
 
         if utype == "mixer":
-            unit = bst.Mixer(uid, ins=ins, outs=out_names[0])
+            unit = bst.Mixer(uid, ins=ins, outs=out_args[0])
         elif utype == "reactor":
             rxn = tmo.Reaction(
                 u["reaction"], reactant=u["reactant"], X=float(u["conversion"])
@@ -390,22 +477,22 @@ class ProcessBuilder:
                 kwargs["T"] = float(u["T"])
             if u.get("P") is not None:
                 kwargs["P"] = float(u["P"])
-            unit = ConversionReactor(uid, ins=ins[0], outs=out_names[0],
+            unit = ConversionReactor(uid, ins=ins[0], outs=out_args[0],
                                      reaction=rxn, **kwargs)
         elif utype == "flash":
             unit = bst.Flash(
-                uid, ins=ins[0], outs=tuple(out_names),
+                uid, ins=ins[0], outs=tuple(out_args),
                 V=float(u["V"]), P=float(u.get("P", 101325.0)),
             )
         elif utype == "splitter":
             unit = bst.Splitter(
-                uid, ins=ins[0], outs=tuple(out_names), split=float(u["split"])
+                uid, ins=ins[0], outs=tuple(out_args), split=float(u["split"])
             )
         elif utype == "heater":
             kwargs = {"T": float(u["T"])}
             if u.get("P") is not None:
                 kwargs["P"] = float(u["P"])
-            unit = bst.HXutility(uid, ins=ins[0], outs=out_names[0], **kwargs)
+            unit = bst.HXutility(uid, ins=ins[0], outs=out_args[0], **kwargs)
         else:  # pragma: no cover - guarded by validation
             raise BuilderError(f"Unsupported unit type '{utype}'.")
 
@@ -416,6 +503,7 @@ class ProcessBuilder:
     def _results(
         self, name: str, sys: Any, streams: dict, feeds: list, units: list,
         econ: dict[str, Any] | None = None,
+        carbon: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         feed_names = {f["name"] for f in feeds}
         consumed = {s for u in units for s in u["ins"]}
@@ -465,6 +553,8 @@ class ProcessBuilder:
         }
         if econ is not None:
             results["economics"] = econ
+        if carbon is not None:
+            results["carbon"] = carbon
         return results
 
     def _verify(

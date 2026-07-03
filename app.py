@@ -10,8 +10,11 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+import biosteam
+
 from biosteam_ai.config import get_api_key
 from biosteam_ai.orchestrator import Orchestrator
+from biosteam_ai.reporting import build_json_report, build_markdown_report
 
 st.set_page_config(page_title="BioSTEAM Assistant", page_icon="🌱", layout="wide")
 st.title("BioSTEAM Assistant")
@@ -130,6 +133,25 @@ def render_built_process(built: dict) -> None:
             f"Material cost ${econ['material_cost_usd_per_yr']:,.0f}/yr."
         )
 
+    carbon = results.get("carbon")
+    if carbon:
+        ghg = carbon.get("direct_ghg_kg_per_hr") or {}
+        if ghg:
+            intensity = carbon.get("co2e_kg_per_kg_product")
+            label = "Direct CO2e"
+            value = f"{carbon['co2e_kg_per_hr']:,.0f} kg/hr"
+            if intensity is not None:
+                value = f"{intensity:,.3f} kg/kg product"
+                label = "Direct carbon intensity"
+            st.metric(label, value)
+            st.caption(
+                f"Direct process outlet emissions ({', '.join(ghg)}), "
+                f"{carbon['gwp_basis']}. Gate-to-gate direct only — not a full "
+                "cradle-to-grave LCA."
+            )
+        else:
+            st.caption("No direct greenhouse gases in outlet streams.")
+
     if built.get("verification"):
         render_verification(built["verification"])
 
@@ -194,6 +216,26 @@ with st.sidebar:
         st.subheader("Provenance log")
         st.caption(f"`{orch.dispatcher.log_path.name}`")
 
+    if orch and st.session_state.history:
+        st.subheader("Export report")
+        log_name = orch.dispatcher.log_path.name
+        md = build_markdown_report(
+            st.session_state.history, orch.model, log_name, biosteam.__version__
+        )
+        js = build_json_report(
+            st.session_state.history, orch.model, log_name, biosteam.__version__
+        )
+        st.download_button(
+            "Download report (Markdown)", md,
+            file_name="biosteam_session_report.md", mime="text/markdown",
+            use_container_width=True,
+        )
+        st.download_button(
+            "Download data (JSON)", js,
+            file_name="biosteam_session_report.json", mime="application/json",
+            use_container_width=True,
+        )
+
     st.subheader("Try asking")
     st.markdown(
         "- What models can I use?\n"
@@ -201,8 +243,26 @@ with st.sidebar:
         "- Compare ethanol price at 80% vs 95% fermentation conversion.\n"
         "- Run a sensitivity analysis on feedstock price from 0.04 to 0.08.\n"
         "- How uncertain is the price if conversion ranges 0.80-0.97?\n"
-        "- Build a process: react ethanol + acetic acid to ethyl acetate, then flash it."
+        "- Build a process: react ethanol + acetic acid to ethyl acetate, then flash it.\n"
+        "- Add a recycle loop to recover unreacted feed and recompute the price.\n"
+        "- What are the direct CO2 emissions of that process?"
     )
+
+if not st.session_state.history:
+    with st.container(border=True):
+        st.markdown(
+            "#### Welcome\n"
+            "This assistant runs **real BioSTEAM simulations** for you — no coding needed. "
+            "Every number comes from a simulation, and each result can be validated and exported.\n\n"
+            "**You can:**\n"
+            "- Analyze curated biorefinery models (corn stover, sugarcane, lipidcane): "
+            "prices, sensitivity, scenario comparison, Monte Carlo uncertainty.\n"
+            "- **Build a new process from scratch** — feeds, reactor, flash, splitter, mixer, "
+            "heater, and recycle loops — then get its equipment cost, minimum selling price, "
+            "and direct carbon emissions.\n"
+            "- Ask *why*/*what does this mean* and get explanations grounded in a knowledge base.\n\n"
+            "Try one of the examples in the sidebar to get started."
+        )
 
 for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
